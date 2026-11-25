@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}About{% endblock %}
+{% block content %}
+<div class="container my-5" style="max-width: 860px;">
+  <h2><i class="bi bi-info-circle text-success"></i> About the project</h2>
+  <p class="lead">Farms often irrigate on a fixed timer, which wastes both water and pump electricity.
+    This project predicts whether irrigation is <i>really</i> needed and only then switches the pump on.</p>
+  <h5 class="mt-4">How it works</h5>
+  <ol>
+    <li>Sensors give temperature, humidity, soil moisture and rainfall.</li>
+    <li>A trained <b>Support Vector Machine</b> classifies the situation as <i>Irrigation Required / Not Required</i>.</li>
+    <li>The <b>electrical optimisation</b> module converts the decision into pump ON/OFF, litres, run-time and kWh.</li>
+    <li>The kWh is compared with a fixed 2-hour daily timer to show the savings.</li>
+  </ol>
+  <h5 class="mt-4">Technology</h5>
+  <p>Python &middot; Pandas &middot; NumPy &middot; Scikit-learn &middot; Matplotlib &middot; Joblib &middot; Flask &middot; Bootstrap 5</p>
+  <div class="alert alert-warning"><b>Note:</b> the training data is synthetic (generated from agronomy rules). Pump power,
+    flow rate and the timer baseline are assumptions defined in <code>src/config.py</code>.</div>
+  <h5 class="mt-4">Dataset EDA</h5>
+  <div class="row g-3">
+    {% for img in ['02_class_balance.png','05_correlation_heatmap.png','03_feature_histograms.png','06_scatter_soil_temp.png'] %}
+    <div class="col-md-6"><img class="img-fluid rounded shadow-sm" src="{{ url_for('static', filename='figures/' + img) }}" alt="EDA figure"></div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

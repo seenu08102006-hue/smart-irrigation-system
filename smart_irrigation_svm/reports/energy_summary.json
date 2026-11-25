@@ -1,0 +1,14 @@
+{
+  "test_days": 1000,
+  "timer_kwh_per_day": 3.0,
+  "smart_kwh_per_day": 2.142,
+  "saving_percent": 28.6,
+  "timer_litres_per_day": 6000.0,
+  "smart_litres_per_day": 4284.6,
+  "water_saving_percent": 28.6,
+  "pump_on_days_percent": 53.7,
+  "days_smart_cheaper_percent": 54.9,
+  "days_smart_costlier_percent": 45.1,
+  "total_kwh_saved_over_test_days": 857.7,
+  "kwh_saved_per_30_days": 25.7
+}

@@ -1,0 +1,104 @@
+{
+  "train_rows": 4000,
+  "test_rows": 1000,
+  "best_model_by_f1": "SVM",
+  "models": {
+    "SVM": {
+      "Accuracy": 0.925,
+      "Precision": 0.9106145251396648,
+      "Recall": 0.9476744186046512,
+      "F1-score": 0.9287749287749287,
+      "ROC-AUC": 0.9822938689217758,
+      "CV F1 (mean)": 0.9168868192182638,
+      "CV F1 (std)": 0.011493933103658514,
+      "Train time (s)": 14.021048069000244,
+      "Best params": {
+        "C": 50,
+        "gamma": 0.02
+      }
+    },
+    "Decision Tree": {
+      "Accuracy": 0.899,
+      "Precision": 0.9029126213592233,
+      "Recall": 0.9011627906976745,
+      "F1-score": 0.9020368574199806,
+      "ROC-AUC": 0.9604755269395862,
+      "CV F1 (mean)": 0.8881664329202635,
+      "CV F1 (std)": 0.008129402198039593,
+      "Train time (s)": 0.35289716720581055,
+      "Best params": {
+        "max_depth": 8,
+        "min_samples_leaf": 20
+      }
+    },
+    "Random Forest": {
+      "Accuracy": 0.911,
+      "Precision": 0.8931860036832413,
+      "Recall": 0.939922480620155,
+      "F1-score": 0.9159584513692163,
+      "ROC-AUC": 0.9747581523480044,
+      "CV F1 (mean)": 0.9066274281558316,
+      "CV F1 (std)": 0.007552218043575075,
+      "Train time (s)": 2.8643815517425537,
+      "Best params": {
+        "max_depth": null,
+        "n_estimators": 200
+      }
+    },
+    "Logistic Regression": {
+      "Accuracy": 0.921,
+      "Precision": 0.908411214953271,
+      "Recall": 0.9418604651162791,
+      "F1-score": 0.9248334919124643,
+      "ROC-AUC": 0.9811527003651739,
+      "CV F1 (mean)": 0.912939703707545,
+      "CV F1 (std)": 0.009835861099286301,
+      "Train time (s)": 0.13543128967285156,
+      "Best params": {
+        "C": 10
+      }
+    }
+  },
+  "confusion_matrices": {
+    "SVM": [
+      [
+        436,
+        48
+      ],
+      [
+        27,
+        489
+      ]
+    ],
+    "Decision Tree": [
+      [
+        434,
+        50
+      ],
+      [
+        51,
+        465
+      ]
+    ],
+    "Random Forest": [
+      [
+        426,
+        58
+      ],
+      [
+        31,
+        485
+      ]
+    ],
+    "Logistic Regression": [
+      [
+        435,
+        49
+      ],
+      [
+        30,
+        486
+      ]
+    ]
+  }
+}

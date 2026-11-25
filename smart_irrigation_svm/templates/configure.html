@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Choose target{% endblock %}
+{% block content %}
+<div class="container my-5">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for cat, msg in messages %}<div class="alert alert-{{ cat }}">{{ msg }}</div>{% endfor %}
+  {% endwith %}
+
+  <h3><span class="badge bg-success me-2">2</span> Check your data and choose what to predict</h3>
+  <p class="text-muted">{{ shape[0] }} rows &times; {{ shape[1] }} columns uploaded.</p>
+
+  <div class="card border-0 shadow-sm mb-4"><div class="card-body">
+    <h6>Preview (first 8 rows)</h6>
+    <div class="table-responsive">{{ preview|safe }}</div>
+  </div></div>
+
+  <div class="row g-4">
+    <div class="col-lg-7">
+      <div class="card border-0 shadow-sm"><div class="card-body">
+        <h6>Columns</h6>
+        <div class="table-responsive" style="max-height: 340px; overflow:auto;">
+          <table class="table table-sm align-middle small">
+            <thead><tr><th>Name</th><th>Type</th><th>Distinct</th><th>Missing</th><th>Example</th></tr></thead>
+            <tbody>{% for c in columns %}
+              <tr><td class="fw-semibold">{{ c.name }}</td><td>{{ c.dtype }}</td><td>{{ c.unique }}</td>
+                  <td>{{ c.missing }}</td><td class="text-truncate" style="max-width:120px">{{ c.example }}</td></tr>{% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div></div>
+    </div>
+    <div class="col-lg-5">
+      <div class="card border-0 shadow-sm"><div class="card-body p-4">
+        <form method="post" id="runForm">
+          <label class="form-label fw-semibold" for="target"><i class="bi bi-bullseye text-success"></i> Target column (what the SVM predicts)</label>
+          <select class="form-select form-select-lg mb-3" name="target" id="target">
+            {% for c in columns %}<option value="{{ c.name }}" {{ 'selected' if c.name == guess }}>{{ c.name }}  ({{ c.unique }} distinct)</option>{% endfor %}
+          </select>
+          <p class="small text-muted">Pick a column with a few classes, such as <i>Yes/No</i> or <i>0/1</i>. All other columns become inputs.</p>
+          <button class="btn btn-success btn-lg w-100" id="runBtn"><i class="bi bi-cpu"></i> Analyze &amp; train SVM</button>
+          <div class="text-center text-muted small mt-3 d-none" id="busy">
+            <div class="spinner-border spinner-border-sm text-success"></div> Training the SVM and drawing graphs&hellip; this can take up to a minute.
+          </div>
+        </form>
+      </div></div>
+    </div>
+  </div>
+</div>
+<script>
+  document.getElementById("runForm").addEventListener("submit", function () {
+    document.getElementById("runBtn").disabled = true;
+    document.getElementById("busy").classList.remove("d-none");
+  });
+</script>
+{% endblock %}

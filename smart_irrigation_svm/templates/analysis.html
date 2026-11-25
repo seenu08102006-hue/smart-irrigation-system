@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}SVM analysis{% endblock %}
+{% block content %}
+{% set base = 'generated/' ~ rid ~ '/' %}
+{% macro gallery(prefix, heading) %}
+  <h4 class="mt-5 mb-3">{{ heading }}</h4>
+  <div class="row g-4">
+  {% for f in r.figures if f.file.startswith(prefix) %}
+    <div class="col-md-6 col-xl-4"><div class="card border-0 shadow-sm h-100">
+      <a href="{{ url_for('static', filename=base ~ f.file) }}" target="_blank">
+        <img class="card-img-top p-2" src="{{ url_for('static', filename=base ~ f.file) }}" alt="{{ f.title }}"></a>
+      <div class="card-body pt-0"><h6 class="mb-1">{{ f.title }}</h6><p class="small text-muted mb-0">{{ f.caption }}</p></div>
+    </div></div>
+  {% endfor %}
+  </div>
+{% endmacro %}
+
+<div class="container my-5">
+  <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+    <div>
+      <h3 class="mb-0"><span class="badge bg-success me-2">3</span> SVM analysis of your dataset</h3>
+      <div class="text-muted">Target: <b>{{ r.target }}</b> &middot; classes: {{ r.classes|join(', ') }}</div>
+    </div>
+    <div class="d-flex gap-2">
+      <a class="btn btn-outline-success" href="{{ url_for('download_model', rid=rid) }}"><i class="bi bi-download"></i> Download trained SVM (.joblib)</a>
+      <a class="btn btn-success" href="{{ url_for('upload') }}"><i class="bi bi-upload"></i> New dataset</a>
+    </div>
+  </div>
+
+  {% for n in r.notes %}<div class="alert alert-warning py-2 mt-3 mb-0"><i class="bi bi-info-circle"></i> {{ n }}</div>{% endfor %}
+
+  <!-- headline metrics -->
+  <div class="row g-3 mt-2">
+    {% for label, key in [('Accuracy','accuracy'),('Precision','precision'),('Recall','recall'),('F1-score','f1')] %}
+    <div class="col-6 col-md-3"><div class="card stat border-0 shadow-sm text-center"><div class="card-body">
+      <div class="text-muted small">{{ label }}</div><div class="fs-2 fw-bold text-success">{{ "%.1f"|format(r.metrics[key]*100) }}%</div></div></div></div>
+    {% endfor %}
+  </div>
+  {% if r.binary %}<p class="small text-muted mt-2 mb-0">ROC-AUC {{ r.metrics.roc_auc }} &middot; positive class = '{{ r.classes[1] }}'.{% else %}<p class="small text-muted mt-2 mb-0">Multi-class data: precision, recall and F1 are weighted averages.{% endif %}
+    Cross-validated F1 {{ r.metrics.cv_f1 }} ({{ r.cv_folds }}-fold) &middot; best C = {{ r.best_params.C }}, gamma = {{ r.best_params.gamma }} &middot;
+    {{ r.train_rows }} training / {{ r.test_rows }} test rows.</p>
+
+  <!-- cleaning summary -->
+  <div class="card border-0 shadow-sm mt-4"><div class="card-body">
+    <h5>Data cleaning summary</h5>
+    <div class="row text-center g-2">
+      <div class="col-6 col-md-3"><div class="fs-4 fw-bold">{{ r.report.rows_uploaded }}</div><div class="small text-muted">rows uploaded</div></div>
+      <div class="col-6 col-md-3"><div class="fs-4 fw-bold">{{ r.report.duplicates_removed }}</div><div class="small text-muted">duplicates removed</div></div>
+      <div class="col-6 col-md-3"><div class="fs-4 fw-bold">{{ r.report.missing_cells_before }}</div><div class="small text-muted">missing cells filled (median / most frequent)</div></div>
+      <div class="col-6 col-md-3"><div class="fs-4 fw-bold">{{ r.report.rows_used }}</div><div class="small text-muted">rows used for SVM</div></div>
+    </div>
+    <p class="small text-muted mt-3 mb-0"><b>Numeric inputs:</b> {{ r.report.features_numeric|join(', ') or 'none' }}<br>
+      <b>Category inputs:</b> {{ r.report.features_categorical|join(', ') or 'none' }}</p>
+  </div></div>
+
+  {{ gallery('svm_', 'SVM graphs') }}
+
+  <h4 class="mt-5 mb-3">Kernel comparison table</h4>
+  <div class="table-responsive card border-0 shadow-sm"><table class="table mb-0">
+    <thead class="table-success"><tr><th>Kernel</th><th>Accuracy</th><th>F1</th></tr></thead>
+    <tbody>{% for k in r.kernels %}<tr><td>{{ k.kernel }}</td><td>{{ "%.2f"|format(k.accuracy*100) }}%</td><td>{{ "%.2f"|format(k.f1*100) }}%</td></tr>{% endfor %}</tbody>
+  </table></div>
+
+  {{ gallery('eda_', 'Exploratory data analysis') }}
+
+  <p class="small text-muted mt-5">Scores are measured on a held-out 20 % test set that was not used for tuning. They describe how well an SVM can learn <i>your</i> file; they do not guarantee the same accuracy on new real-world data.</p>
+</div>
+{% endblock %}

@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Upload dataset{% endblock %}
+{% block content %}
+<header class="hero text-white text-center">
+  <div class="container py-5">
+    <h1 class="display-6 fw-bold"><i class="bi bi-upload"></i> Upload &amp; Analyze a dataset</h1>
+    <p class="lead mb-0">Upload any CSV file. We clean it, explore it, train a Support Vector Machine and draw the SVM graphs.</p>
+  </div>
+</header>
+
+<div class="container my-5" style="max-width: 820px;">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for cat, msg in messages %}<div class="alert alert-{{ cat }}">{{ msg }}</div>{% endfor %}
+  {% endwith %}
+
+  <div class="card border-0 shadow-sm mb-4"><div class="card-body p-4">
+    <h4><span class="badge bg-success me-2">1</span> Choose your CSV file</h4>
+    <form method="post" enctype="multipart/form-data" class="mt-3">
+      <input class="form-control form-control-lg mb-3" type="file" name="file" accept=".csv">
+      <button class="btn btn-success btn-lg w-100"><i class="bi bi-cloud-arrow-up"></i> Upload</button>
+    </form>
+    <hr>
+    <form method="post" class="d-flex align-items-center gap-3">
+      <input type="hidden" name="use_sample" value="1">
+      <span class="text-muted small flex-grow-1">No file handy? Try the project's own irrigation dataset (5,000 rows).</span>
+      <button class="btn btn-outline-success"><i class="bi bi-play-circle"></i> Use sample data</button>
+    </form>
+  </div></div>
+
+  <div class="card border-0 shadow-sm"><div class="card-body p-4">
+    <h5>What your file should look like</h5>
+    <ul class="mb-2">
+      <li>A CSV with a header row; one row per observation.</li>
+      <li>One <b>target column</b> with a few classes (Yes/No, 0/1, or labels). You choose it in the next step.</li>
+      <li>Other columns can be numbers or short text categories. IDs and constant columns are removed automatically.</li>
+      <li>Missing values and duplicate rows are handled for you. Maximum 10 MB; at least 30 rows.</li>
+    </ul>
+    <p class="small text-muted mb-0">You will get: data cleaning summary &middot; EDA graphs &middot; SVM confusion matrix, ROC curve,
+      decision regions, C/gamma heat-map, kernel comparison, learning curve &middot; downloadable trained model.</p>
+  </div></div>
+</div>
+{% endblock %}

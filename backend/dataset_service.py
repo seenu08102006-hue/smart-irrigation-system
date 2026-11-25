@@ -4,7 +4,7 @@ dataset_service.py - everything that happens to an uploaded dataset ("Start Anal
     read_table()      read .csv / .xlsx
     file_info()       rows, columns, missing cells, duplicates, size, preview
     detect_mapping()  guess which column is temperature, humidity, soil moisture, rainfall, crop, date, target
-    run_analysis()    cleaning -> EDA -> chart data -> SVM training -> findings
+    run_analysis()    cleaning -> EDA -> chart data -> SVD feature reduction -> PDE soil-moisture model -> SVM training (with and without SVD) -> findings
     predict_with_model()  manual prediction with the SVM trained on the upload
 
 Everything is computed from the uploaded file only: no sample data, no default model, no simulated or invented values.
@@ -15,6 +15,7 @@ import io
 import math
 import os
 import re
+import time
 import warnings
 
 import joblib
@@ -28,9 +29,13 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.svm import SVC
 
+import pde_model
+import svd_module
+
 warnings.filterwarnings("ignore")
 
 FEATURE_KEYS = ["temperature", "humidity", "soil_moisture", "rainfall"]
+PDE_FEATS = ["pde_next", "pde_change"]          # soil moisture one day ahead according to the PDE, and its change
 REQUIRED = ["date", "temperature", "humidity", "soil_moisture", "rainfall"]
 REQUIRED_NAMES = {"date": "Date", "temperature": "Temperature", "humidity": "Humidity", "soil_moisture": "Soil Moisture", "rainfall": "Rainfall"}
 LABELS = {"temperature": "Temperature", "humidity": "Humidity", "soil_moisture": "Soil Moisture", "rainfall": "Rainfall"}
@@ -176,6 +181,32 @@ def check_required(mapping: dict):
 
 
 # ---------------------------------------------------------------------------- analysis
+def select_extra_features(raw, mapping, max_extra=30):
+    """Numeric columns of the uploaded file that are not already mapped (wind speed, soil temperature, nutrients, sensors ...).
+    Skipped: identifiers / row counters, constant columns and columns with more than 5 % missing values."""
+    used = {v for v in mapping.values() if v}
+    chosen, skipped = {}, []
+    for col in raw.columns:
+        if col in used or len(chosen) >= max_extra:
+            continue
+        ser = raw[col]
+        if ser.dtype.kind not in "if":
+            continue
+        reason = None
+        if ser.nunique(dropna=True) < 2:
+            reason = "constant"
+        elif ser.isna().mean() > 0.05:
+            reason = "more than 5% missing"
+        elif _norm(col) in {"id", "index", "no", "sno", "srno", "recordid", "rowid", "serial", "unnamed0"} or (
+                ser.dtype.kind == "i" and ser.is_monotonic_increasing and ser.nunique() == len(ser)):
+            reason = "identifier"
+        if reason:
+            skipped.append(f"{col} ({reason})")
+        else:
+            chosen["x__" + str(col)] = str(col)
+    return chosen, skipped
+
+
 class Steps:
     """Collects the visible cleaning / analysis steps and reports progress."""
 
@@ -240,6 +271,9 @@ def run_analysis(path: str, mapping: dict, derive_threshold, model_path: str, pr
             scaled.append(f"{mapping[key]} (0-1 -> %)")
     if mapping.get("crop"):
         df["crop"] = raw[mapping["crop"]].astype(str).str.strip().str.title().replace({"Nan": np.nan, "": np.nan})
+    extras, skipped_extras = select_extra_features(raw, mapping)
+    for key, col in extras.items():
+        df[key] = pd.to_numeric(raw[col], errors="coerce")
     date_col = mapping["date"]
     df["date"] = pd.to_datetime(raw[date_col], errors="coerce")
     if df["date"].notna().mean() < 0.8:
@@ -250,7 +284,9 @@ def run_analysis(path: str, mapping: dict, derive_threshold, model_path: str, pr
         df["_target_raw"] = raw[mapping["target"]]
     st.done("Mapped: " + ", ".join(f"{REQUIRED_NAMES.get(k, k.title())} <- '{v}'" for k, v in mapping.items() if v)
             + (f". Converted: {'; '.join(converted)}." if converted else "")
-            + (f" Rescaled: {'; '.join(scaled)}." if scaled else ""),
+            + (f" Rescaled: {'; '.join(scaled)}." if scaled else "")
+            + (f" Extra numeric features found for the SVD: {', '.join(extras.values())}." if extras else "")
+            + (f" Not used: {', '.join(skipped_extras)}." if skipped_extras else ""),
             {"mapped_columns": sum(1 for v in mapping.values() if v)}, percent=14)
 
     # ---- 3. duplicates --------------------------------------------------------------
@@ -281,7 +317,7 @@ def run_analysis(path: str, mapping: dict, derive_threshold, model_path: str, pr
     miss_before = {k: int(df[k].isna().sum()) for k in present}
     miss_before["date"] = int(df["date"].isna().sum())
     n_before = len(df)
-    df = df.dropna(subset=present + ["date"])
+    df = df.dropna(subset=present + ["date"] + list(extras))
     dropped = n_before - len(df)
     if len(df) < 30 or len(df) < 0.5 * n_before:
         raise DatasetError(f"Too many missing values: only {len(df)} of {n_before} rows have all of Date, Temperature, Humidity, "
@@ -359,17 +395,54 @@ def run_analysis(path: str, mapping: dict, derive_threshold, model_path: str, pr
     charts = build_charts(df, present, mapping, corr)
     st.done(f"{len(charts['timeseries']['series'])} time-series, histograms, box plots, scatter, bar and pie charts prepared.", percent=76)
 
-    # ---- 11. SVM -----------------------------------------------------------------------
-    st.start("svm", "Training the SVM model", 78)
-    model_info = train_svm(df, present, model_path)
-    m = model_info["metrics"]
-    st.done(f"RBF-SVM trained on {model_info['train_rows']:,} rows (best C={model_info['best_params']['C']}, "
-            f"gamma={model_info['best_params']['gamma']}). Test accuracy {m['accuracy'] * 100:.1f}%, F1 {m['f1'] * 100:.1f}%.",
-            {"accuracy": m["accuracy"]}, percent=90)
+    # ---- 11. PDE soil-moisture model ------------------------------------------------------
+    st.start("svd", "SVD feature reduction (X = U Σ Vᵀ)", 77)
+    orig_feats = present + list(extras)
+    names = [LABELS.get(k) or extras[k] for k in orig_feats]
+    svd = svd_module.analyse(df[orig_feats].to_numpy(dtype=float), names, target=df["target"].to_numpy())
+    st.done(f"{svd['n_features']} numeric feature(s) -> {svd['n_components']} component(s) preserving {100 * svd['variance_preserved']:.1f}% of the variance "
+            f"(singular values {', '.join(f'{v:.2f}' for v in svd['singular_values'][:4])}{' ...' if svd['n_features'] > 4 else ''})."
+            + ("" if svd["reduced"] else " The features are not redundant enough to drop any component."),
+            {"components": svd["n_components"], "variance": svd["variance_preserved"]}, percent=80)
 
-    # ---- 12. findings -------------------------------------------------------------------------
-    st.start("findings", "Summarising the findings", 92)
-    recs = recommendations(df, present, stats, model_info, target_derived, info, derive_threshold)
+    # ---- 11. PDE soil-moisture model ------------------------------------------------------
+    st.start("pde", "Solving the soil-moisture PDE (finite differences)", 81)
+    dry_level = float(df["soil_moisture"].quantile(1 / 3))           # "dry" = lowest third of YOUR soil-moisture values
+    target_level = float(df["soil_moisture"].quantile(0.75))         # irrigate back up to the upper quarter of YOUR values
+    daily = pde_model.daily_series(df, not target_derived, "crop" in df)
+    try:
+        pde = pde_model.simulate(daily, not target_derived, dry_level)
+    except pde_model.PdeError as exc:
+        raise DatasetError(str(exc))
+    df = add_pde_features(df, pde["params"])
+    pm = pde["metrics"]
+    st.done(f"Diffusion-evaporation PDE calibrated on {pm['pairs']:,} consecutive days (D={pde['params']['D']:.3g}, "
+            f"k_e={pde['params']['k_e']:.3g}, k_d={pde['params']['k_d']:.3g}). One-day-ahead error {pm['rmse']:.2f} % soil moisture "
+            f"(simple 'tomorrow = today' guess: {pm['persistence_rmse']:.2f} %). The PDE forecast of tomorrow's moisture becomes an SVM feature.",
+            {"rmse": pm["rmse"]}, percent=86)
+
+    # ---- 12. SVM -----------------------------------------------------------------------
+    st.start("svm", "Training the SVM on the SVD components (and on the original features for comparison)", 87)
+    extra_info = {k: {"label": c, "min": float(df[k].min()), "max": float(df[k].max()), "median": float(df[k].median())} for k, c in extras.items()}
+    model_info, pipe, svm_feats = train_svm(df, present, model_path, {
+        "pde_params": pde["params"], "target_level": target_level, "dry_level": dry_level, "extras": extra_info},
+        orig_feats, svd["n_components"])
+    svd["comparison"] = model_info.pop("comparison")
+    m = model_info["metrics"]
+    cmp_ = svd["comparison"]
+    st.done(f"SVM before SVD: accuracy {100 * cmp_['before']['metrics']['accuracy']:.1f}%, after SVD: {100 * cmp_['after']['metrics']['accuracy']:.1f}%. "
+            f"RBF-SVM trained on {model_info['train_rows']:,} rows (best C={model_info['best_params']['C']}, "
+            f"gamma={model_info['best_params']['gamma']}). Test accuracy {m['accuracy'] * 100:.1f}%, F1 {m['f1'] * 100:.1f}%.",
+            {"accuracy": m["accuracy"]}, percent=93)
+
+    # ---- 13. findings + daily pump plan ------------------------------------------------------------
+    st.start("findings", "Summarising the findings", 94)
+    recs = recommendations(df, present, stats, model_info, target_derived, info, derive_threshold, pde, dry_level, target_level, svd)
+    need = pipe.predict(df[svm_feats])
+    deficit = np.maximum(0.0, target_level - np.minimum(df["soil_moisture"], df["pde_next"]))
+    plan = pd.DataFrame({"day": df["date"].dt.floor("D"), "need": need, "deficit": deficit}).groupby("day").mean()
+    daily_plan = {"dates": plan.index.strftime("%Y-%m-%d").tolist(), "need": (plan["need"] >= 0.5).astype(int).tolist(),
+                  "deficit_pct": plan["deficit"].round(2).tolist()}
     st.done(f"{len(recs)} finding(s) written from your data.", percent=97)
 
     crops = sorted(df["crop"].unique().tolist()) if "crop" in df else []
@@ -380,12 +453,22 @@ def run_analysis(path: str, mapping: dict, derive_threshold, model_path: str, pr
         "cleaning": {"steps": st.items[:len(cleaning_steps_before_eda)], "rows_before": info["rows"], "rows_after": int(len(df)),
                      "outliers": out_info, "missing_before": miss_before},
         "steps": st.items, "stats": stats, "correlation": {"labels": corr_labels, "matrix": corr.values.tolist()},
-        "charts": charts, "model": model_info,
+        "charts": charts, "model": model_info, "svd": svd, "pde": pde, "daily_plan": daily_plan, "extras": extra_info,
+        "levels": {"dry": dry_level, "target": target_level},
         "recommendations": recs, "crops": crops, "ranges": ranges,
         "labels": {k: LABELS[k] for k in present}, "units": {k: UNITS[k] for k in present},
     }
     cb(100, "Analysis complete", st.items)
     return jsonable(results)
+
+
+def add_pde_features(df, params):
+    """PDE estimate of tomorrow's soil moisture from today's readings (no irrigation applied) and its change."""
+    out = df.copy()
+    out["pde_next"] = pde_model.one_step_mean(out["soil_moisture"], out["temperature"], out["humidity"], out["rainfall"],
+                                              np.zeros(len(out)), params)
+    out["pde_change"] = out["pde_next"] - out["soil_moisture"]
+    return out
 
 
 # ---------------------------------------------------------------------------- charts
@@ -457,9 +540,28 @@ def build_charts(df, present, mapping, corr):
 
 
 # ---------------------------------------------------------------------------- SVM
-def train_svm(df, present, model_path):
+def _fit_svm(transformers, Xtr, ytr, Xte, yte):
+    """Grid-search C and gamma (3-fold CV on F1), fit the final RBF-SVM and evaluate it on the unseen rows. Returns timing too."""
+    t0 = time.perf_counter()
+    grid = GridSearchCV(Pipeline([("prep", ColumnTransformer(transformers)), ("svm", SVC(kernel="rbf"))]),
+                        {"svm__C": [1, 10, 50], "svm__gamma": ["scale", 0.05, 0.2]}, cv=3, scoring="f1", n_jobs=1).fit(Xtr, ytr)
+    best = {k.replace("svm__", ""): v for k, v in grid.best_params_.items()}
+    pipe = Pipeline([("prep", ColumnTransformer(transformers)),
+                     ("svm", SVC(kernel="rbf", probability=True, random_state=42, **best))]).fit(Xtr, ytr)
+    seconds = time.perf_counter() - t0
+    pred, score = pipe.predict(Xte), pipe.decision_function(Xte)
+    metrics = {"accuracy": accuracy_score(yte, pred), "precision": precision_score(yte, pred, zero_division=0),
+               "recall": recall_score(yte, pred, zero_division=0), "f1": f1_score(yte, pred, zero_division=0),
+               "roc_auc": roc_auc_score(yte, score)}
+    return {"pipe": pipe, "best": best, "metrics": metrics, "seconds": seconds, "cv_f1": float(grid.best_score_),
+            "pred": pred, "score": score}
+
+
+def train_svm(df, present, model_path, extra, orig_feats, n_components):
+    """Train the SVM twice on the same split: on the original (scaled) features, and on the SVD components. The SVD model is the
+    one that is kept and used for predictions. The PDE features (pde_next, pde_change) and the crop are inputs of both."""
     use_crop = "crop" in df and 1 < df["crop"].nunique() <= 30
-    feats = present + (["crop"] if use_crop else [])
+    feats = orig_feats + PDE_FEATS + (["crop"] if use_crop else [])
     d = df[feats + ["target"]]
     if len(d) > 6000:
         d, _ = train_test_split(d, train_size=6000, stratify=d["target"], random_state=42)
@@ -467,35 +569,34 @@ def train_svm(df, present, model_path):
     if y.value_counts().min() < 10:
         raise DatasetError("The smaller class has fewer than 10 rows; add more examples of both Yes and No.")
     Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
-    transformers = [("num", StandardScaler(), present)]
-    if use_crop:
-        transformers.append(("cat", OneHotEncoder(handle_unknown="ignore"), ["crop"]))
-    prep = ColumnTransformer(transformers)
-    grid = GridSearchCV(Pipeline([("prep", prep), ("svm", SVC(kernel="rbf"))]),
-                        {"svm__C": [1, 10, 50], "svm__gamma": ["scale", 0.05, 0.2]},
-                        cv=3, scoring="f1", n_jobs=-1).fit(Xtr, ytr)
-    best = {k.replace("svm__", ""): v for k, v in grid.best_params_.items()}
-    pipe = Pipeline([("prep", ColumnTransformer(transformers)),
-                     ("svm", SVC(kernel="rbf", probability=True, random_state=42, **best))]).fit(Xtr, ytr)
-    pred = pipe.predict(Xte)
-    score = pipe.decision_function(Xte)
+    cat = [("cat", OneHotEncoder(handle_unknown="ignore"), ["crop"])] if use_crop else []
+    before = _fit_svm([("num", StandardScaler(), orig_feats + PDE_FEATS)] + cat, Xtr, ytr, Xte, yte)
+    after = _fit_svm([("svd", svd_module.SvdReducer(n_components), orig_feats), ("pde", StandardScaler(), PDE_FEATS)] + cat, Xtr, ytr, Xte, yte)
+    pipe, best, metrics, score = after["pipe"], after["best"], after["metrics"], after["score"]
+    pred = after["pred"]
     fpr, tpr, _ = roc_curve(yte, score)
     step = max(1, len(fpr) // 120)
     cm = confusion_matrix(yte, pred, labels=[0, 1])
-    metrics = {"accuracy": accuracy_score(yte, pred), "precision": precision_score(yte, pred, zero_division=0),
-               "recall": recall_score(yte, pred, zero_division=0), "f1": f1_score(yte, pred, zero_division=0),
-               "roc_auc": roc_auc_score(yte, score)}
-    joblib.dump({"pipeline": pipe, "features": feats, "present": present, "use_crop": use_crop,
+    joblib.dump({"pipeline": pipe, "features": feats, "present": present, "orig_feats": orig_feats, "use_crop": use_crop, **extra,
                  "crops": sorted(df["crop"].unique().tolist()) if "crop" in df else []}, model_path)
+
+    def pack(m):
+        return {"metrics": {k: round(float(v), 4) for k, v in m["metrics"].items()}, "train_seconds": round(m["seconds"], 3),
+                "best_params": {k: (v if isinstance(v, str) else float(v)) for k, v in m["best"].items()}, "cv_f1": round(m["cv_f1"], 4)}
+    comparison = {"before": {**pack(before), "n_inputs": len(orig_feats) + len(PDE_FEATS)},
+                  "after": {**pack(after), "n_inputs": n_components + len(PDE_FEATS)},
+                  "change": {k: round(float(after["metrics"][k] - before["metrics"][k]), 4) for k in after["metrics"]},
+                  "time_ratio": round(after["seconds"] / before["seconds"], 3) if before["seconds"] > 0 else None,
+                  "extra_inputs": ["pde_next", "pde_change"] + (["crop (one-hot)"] if use_crop else [])}
     return ({"features": feats, "metrics": {k: round(float(v), 4) for k, v in metrics.items()}, "confusion": cm.tolist(),
              "roc": {"fpr": fpr[::step].round(4).tolist(), "tpr": tpr[::step].round(4).tolist()},
              "best_params": {k: (v if isinstance(v, str) else float(v)) for k, v in best.items()},
-             "train_rows": int(len(Xtr)), "test_rows": int(len(Xte)), "kernel": "rbf",
-             "cv_f1": round(float(grid.best_score_), 4)})
+             "train_rows": int(len(Xtr)), "test_rows": int(len(Xte)), "kernel": "rbf", "input": "SVD components + PDE features",
+             "cv_f1": round(after["cv_f1"], 4), "comparison": comparison}, pipe, feats)
 
 
 # ---------------------------------------------------------------------------- findings
-def recommendations(df, present, stats, model, derived, info, thr):
+def recommendations(df, present, stats, model, derived, info, thr, pde, dry_level, target_level, svd):
     """Plain-language findings. Every number comes from the uploaded dataset and its SVM."""
     recs = []
     share = 100 * df["target"].mean()
@@ -513,6 +614,19 @@ def recommendations(df, present, stats, model, derived, info, thr):
     corr = df[present + ["target"]].corr()["target"].drop("target").fillna(0)
     top = corr.abs().sort_values(ascending=False).index[0]
     recs.append(f"{LABELS[top]} is the variable most strongly related to the irrigation label (correlation {corr[top]:+.2f}).")
+    cmp_ = svd["comparison"]
+    recs.append(f"SVD reduced {svd['n_features']} numeric feature(s) to {svd['n_components']} component(s) keeping {100 * svd['variance_preserved']:.1f}% of the variance. "
+                f"SVM accuracy {100 * cmp_['before']['metrics']['accuracy']:.1f}% before and {100 * cmp_['after']['metrics']['accuracy']:.1f}% after SVD "
+                f"({100 * cmp_['change']['accuracy']:+.1f} points), F1 {100 * cmp_['change']['f1']:+.1f} points; training took {cmp_['before']['train_seconds']:.1f} s "
+                f"and {cmp_['after']['train_seconds']:.1f} s. "
+                + ("" if svd["reduced"] else "With so few, largely independent features SVD cannot drop any component, so no gain is expected."))
+    pm, fc = pde["metrics"], pde["forecast"]["scenarios"]
+    recs.append(f"The PDE soil-moisture model predicts the next day with an error of {pm['rmse']:.2f} % (a 'tomorrow = today' guess has "
+                f"{pm['persistence_rmse']:.2f} %): " + ("it explains the day-to-day changes well." if pm["skill_vs_persistence"] > 0.3 else
+                "it adds little over a simple guess for this file, so treat its forecasts with care."))
+    nr = fc["No rain"]
+    recs.append(f"Without rain the PDE expects soil moisture to fall from {pde['forecast']['context']['observed'][-1]:.1f}% to {nr['mean'][-1]:.1f}% in "
+                f"{pde['forecast']['horizon']} days" + (f" and to reach the dry level ({dry_level:.1f}%) in about {nr['dry_in_days']} day(s)." if nr["dry_in_days"] else "."))
     sm = stats["soil_moisture"]
     recs.append(f"Soil moisture ranged from {sm['min']:.1f}% to {sm['max']:.1f}% (mean {sm['mean']:.1f}%, median {sm['median']:.1f}%).")
     wet = 100 * float((df["rainfall"] > 0).mean())
@@ -534,14 +648,22 @@ def load_user_model(path):
     return _cache[path][1]
 
 
-def predict_with_model(model_path, temperature, humidity, soil_moisture, rainfall, crop):
+def predict_with_model(model_path, temperature, humidity, soil_moisture, rainfall, crop, extras=None):
     bundle = load_user_model(model_path)
-    row = {"temperature": temperature, "humidity": humidity, "soil_moisture": soil_moisture, "rainfall": rainfall}
+    pde_next = float(pde_model.one_step_mean([soil_moisture], [temperature], [humidity], [rainfall], [0.0], bundle["pde_params"])[0])
+    row = {"temperature": temperature, "humidity": humidity, "soil_moisture": soil_moisture, "rainfall": rainfall,
+           "pde_next": pde_next, "pde_change": pde_next - soil_moisture}
+    for key, info in bundle.get("extras", {}).items():                 # other sensor columns: value given, else the typical value of YOUR data
+        v = (extras or {}).get(key)
+        row[key] = float(v) if v is not None else info["median"]
     if bundle["use_crop"]:
         row["crop"] = crop if crop in bundle["crops"] else bundle["crops"][0]
     X = pd.DataFrame([row])[bundle["features"]]
     pipe = bundle["pipeline"]
     needs = bool(pipe.predict(X)[0])
     p_yes = float(pipe.predict_proba(X)[0][list(pipe.classes_).index(1)])
+    deficit = max(0.0, bundle["target_level"] - min(soil_moisture, pde_next))
     return {"irrigation_required": needs, "prediction": "Irrigation Required" if needs else "No Irrigation Needed",
-            "probability_yes": round(100 * p_yes, 1), "confidence": round(100 * max(p_yes, 1 - p_yes), 1)}
+            "pump_status": "ON" if needs else "OFF", "probability_yes": round(100 * p_yes, 1),
+            "confidence": round(100 * max(p_yes, 1 - p_yes), 1), "pde_next_moisture": round(pde_next, 2),
+            "deficit_pct": round(deficit if needs else 0.0, 2)}

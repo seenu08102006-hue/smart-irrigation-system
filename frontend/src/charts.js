@@ -1,10 +1,10 @@
 import {
-  ArcElement, BarElement, CategoryScale, Chart as ChartJS, Filler, Legend, LinearScale,
+  ArcElement, BarController, BarElement, CategoryScale, LineController, Chart as ChartJS, Filler, Legend, LinearScale,
   LineElement, PointElement, Tooltip,
 } from "chart.js";
 
 // Register only the Chart.js pieces we use (smaller bundle)
-ChartJS.register(ArcElement, BarElement, CategoryScale, Filler, Legend, LinearScale, LineElement, PointElement, Tooltip);
+ChartJS.register(ArcElement, BarController, BarElement, LineController, CategoryScale, Filler, Legend, LinearScale, LineElement, PointElement, Tooltip);
 
 export const PALETTE = {
   green: "#16a34a", greenSoft: "rgba(22,163,74,0.18)",

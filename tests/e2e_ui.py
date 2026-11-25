@@ -39,6 +39,8 @@ def make_files():
         "Temperature": rng.normal(28, 5, n).round(1), "Humidity": rng.uniform(30, 90, n).round(1),
         "Soil Moisture": soil.round(1), "Rainfall": np.where(rng.random(n) < .25, rng.gamma(2, 6, n), 0).round(1),
         "Crop": rng.choice(["Rice", "Wheat", "Maize"], n)})
+    df["Soil Temp"] = (df["Temperature"] * 0.9 + rng.normal(0, .4, n)).round(2)      # a second, redundant temperature sensor
+    df["Wind Speed"] = rng.gamma(3, 2, n).round(2)
     good = os.path.join(WORK, "field_readings.xlsx")
     df.to_excel(good, index=False)
     bad = os.path.join(WORK, "incomplete.csv")
@@ -125,21 +127,37 @@ def main():
             ok.append("valid file validated, analysed automatically and shown on the dashboard")
 
             for tab, name in [("Data cleaning", "04_cleaning"), ("Statistics", "05_statistics"), ("Graphs", "06_graphs"),
-                              ("AI model", "07_model"), ("Findings", "08_findings")]:
+                              ("SVD Feature Reduction", "06a_svd"), ("PDE soil moisture", "06b_pde"), ("SVM model", "07_model"), ("Findings", "08_findings")]:
                 page.get_by_role("button", name=tab, exact=True).click()
                 page.wait_for_timeout(1500)
                 shot(name, full=True)
             ok.append("all result tabs render")
-            body = page.inner_text("body").lower()
-            assert "electricity" not in body and "simulated" not in body, "no energy / simulated text allowed"
+            page.get_by_role("button", name="SVD Feature Reduction", exact=True).click()
+            page.wait_for_selector("text=Performance"[:0] or "text=SVM performance: before vs after SVD")
+            ok.append("SVD tab shows the feature reduction and the before/after SVM comparison")
+
+            # water & electricity: nothing is shown until the user enters their own pump data
+            page.get_by_role("button", name="Water & electricity", exact=True).click()
+            page.wait_for_selector("text=Enter the field and pump values above")
+            for k, v in (("area_m2", "200"), ("root_depth_mm", "300"), ("pump_kw", "1.5"), ("flow_lph", "4000"), ("baseline_hours", "2")):
+                page.fill(f"#sys-{k}", v)
+            page.get_by_role("button", name="Save and calculate").click()
+            page.wait_for_selector("text=Water used", timeout=20000)
+            shot("07b_usage", full=True)
+            ok.append("pump data entered by the user -> water and electricity are calculated")
 
             # 6. prediction with the uploaded model
             page.goto(BASE + "/predict")
             page.wait_for_selector("text=Model trained on")
             page.fill("#soil_moisture", "6")
+            assert page.locator("input[id^='x__']").count() == 2, "extra sensors must appear in the prediction form"
             page.get_by_role("button", name="Predict", exact=True).click()
             page.wait_for_selector("text=Prediction Result", timeout=20000)
+            page.wait_for_selector("text=Water Requirement")
             shot("09_prediction", full=True)
+            page.goto(BASE + "/dashboard")
+            page.get_by_role("button", name="Prediction history", exact=True).click()
+            page.wait_for_selector("text=Irrigation Required")
             ok.append("prediction uses the model trained on the upload")
 
             # 7. reports

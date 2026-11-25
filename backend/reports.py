@@ -138,6 +138,49 @@ def chart_images(r):
     axes[1].legend(fontsize=8); axes[1].set_title("ROC curve", fontsize=9)
     imgs.append(("SVM Confusion Matrix and ROC Curve", _png(fig)))
 
+    sv = r["svd"]
+    fig, axes = plt.subplots(1, 3, figsize=(7.8, 2.8))
+    x = np.arange(1, len(sv["singular_values"]) + 1)
+    axes[0].plot(x, sv["singular_values"], "o-", color=GREEN); axes[0].set_title("Scree plot (singular values)", fontsize=8)
+    axes[1].bar(x, np.array(sv["explained_variance_ratio"]) * 100, color="#0ea5e9")
+    axes[1].plot(x, np.array(sv["cumulative_variance"]) * 100, "o-", color="#f59e0b")
+    axes[1].axhline(sv["threshold"] * 100, color="grey", ls=":", lw=.8); axes[1].set_title("Explained variance %", fontsize=8)
+    cm_ = sv["comparison"]; names = ["accuracy", "precision", "recall", "f1"]
+    w = .38; xi = np.arange(len(names))
+    axes[2].bar(xi - w / 2, [cm_["before"]["metrics"][k] * 100 for k in names], w, label="Before SVD", color="#94a3b8")
+    axes[2].bar(xi + w / 2, [cm_["after"]["metrics"][k] * 100 for k in names], w, label="After SVD", color=GREEN)
+    axes[2].set_xticks(xi); axes[2].set_xticklabels(["Acc", "Prec", "Rec", "F1"], fontsize=7); axes[2].legend(fontsize=6); axes[2].set_title("SVM before / after SVD %", fontsize=8)
+    for ax in axes:
+        ax.tick_params(labelsize=6); ax.spines[["top", "right"]].set_visible(False)
+    imgs.append(("SVD analysis", _png(fig)))
+
+    pde = r["pde"]
+    fit = pde["fit"]
+    fig, ax = plt.subplots(figsize=(7.5, 3.0))
+    ax.plot(fit["observed"], color="#a16207", lw=1.3, label="Observed (uploaded)")
+    ax.plot(fit["pde"], color=GREEN, lw=1.1, label="PDE one-day-ahead")
+    tk = np.linspace(0, len(fit["dates"]) - 1, min(6, len(fit["dates"]))).astype(int)
+    ax.set_xticks(tk); ax.set_xticklabels([fit["dates"][i] for i in tk], rotation=30, ha="right", fontsize=7)
+    ax.set_ylabel("Soil moisture (%)", fontsize=8); ax.legend(fontsize=7); ax.spines[["top", "right"]].set_visible(False)
+    imgs.append(("PDE soil-moisture model versus the uploaded readings", _png(fig)))
+
+    fc = pde["forecast"]
+    fig, ax = plt.subplots(figsize=(7.5, 3.0))
+    ctx = fc["context"]
+    ax.plot(range(len(ctx["observed"])), ctx["observed"], color="#a16207", lw=1.5, label="Observed")
+    x0 = len(ctx["observed"]) - 1
+    for name, col in (("No rain", "#ef4444"), ("Average rain", "#0ea5e9")):
+        ax.plot([x0] + [x0 + j + 1 for j in range(fc["horizon"])], [ctx["observed"][-1]] + fc["scenarios"][name]["mean"], "--o", ms=3, color=col, label=name)
+    ax.axhline(fc["dry_level"], color="grey", lw=.8, ls=":", label="Dry level")
+    ax.set_ylabel("Soil moisture (%)", fontsize=8); ax.legend(fontsize=7); ax.spines[["top", "right"]].set_visible(False)
+    imgs.append((f"PDE forecast for the next {fc['horizon']} days", _png(fig)))
+
+    hm = np.array(pde["heatmap"]["values"]).T
+    fig, ax = plt.subplots(figsize=(7.5, 2.8))
+    im = ax.imshow(hm, aspect="auto", cmap="YlGnBu", extent=[0, hm.shape[1], 1, 0])
+    ax.set_xlabel("Day (last %d days of the file)" % hm.shape[1], fontsize=8); ax.set_ylabel("Depth (0 = surface, 1 = bottom)", fontsize=8)
+    fig.colorbar(im, ax=ax, label="Soil moisture %")
+    imgs.append(("Soil-moisture distribution over depth and time", _png(fig)))
     return imgs
 
 
@@ -199,16 +242,58 @@ def build_pdf(r, preds):
     S.append(Paragraph(f"RBF kernel, C = {m['best_params']['C']}, gamma = {m['best_params']['gamma']}; trained on {m['train_rows']:,} rows and tested on "
                        f"{m['test_rows']:,} unseen rows. Confusion matrix [[TN, FP], [FN, TP]] = {m['confusion']}.", body))
 
-    S.append(Paragraph("6. Findings", h2))
+    sv, cmp_ = r["svd"], r["svd"]["comparison"]
+    S.append(Paragraph("6. SVD feature reduction", h2))
+    S.append(Paragraph("Features are standardised and decomposed as X = U Sigma V^T. The first components that keep at least "
+                       f"{sv['threshold'] * 100:.0f}% of the variance feed the SVM (together with the PDE features). Features: {', '.join(sv['features'])}.", body))
+    S.append(table([["Original features", "Components kept", "Variance preserved", "Singular values (first 5)"],
+                    [sv["n_features"], sv["n_components"], f"{sv['variance_preserved'] * 100:.1f}%", ", ".join(f"{v:.2f}" for v in sv["singular_values"][:5])]]))
+    S.append(Spacer(1, 4))
+    rows = [["", "Accuracy", "Precision", "Recall", "F1", "Training time (s)", "SVM inputs"]]
+    for key, name in (("before", "Before SVD"), ("after", "After SVD")):
+        m_ = cmp_[key]
+        rows.append([name] + [f"{m_['metrics'][k] * 100:.1f}%" for k in ("accuracy", "precision", "recall", "f1")] + [m_["train_seconds"], m_["n_inputs"]])
+    rows.append(["Change (points)"] + [f"{cmp_['change'][k] * 100:+.1f}" for k in ("accuracy", "precision", "recall", "f1")] + [f"x{cmp_['time_ratio']}", ""])
+    S.append(table(rows))
+    pde, pp, pm = r["pde"], r["pde"]["params"], r["pde"]["metrics"]
+    S.append(Paragraph("7. PDE soil-moisture model", h2))
+    S.append(Paragraph("d(theta)/dt = D d2(theta)/dz2 with rainfall and irrigation entering at the surface, evaporation (rising with temperature, "
+                       "falling with humidity) leaving at the surface and drainage at the bottom. Solved with finite volumes and implicit Euler; "
+                       "the constants were fitted to the uploaded readings.", body))
+    S.append(table([["D", "alpha (rain)", "k_e (evaporation)", "k_d (drainage)", "beta (irrigation)", "RMSE %", "Persistence RMSE %", "Skill"],
+                    [pp["D"], pp["alpha"], pp["k_e"], pp["k_d"], pp["beta"] if pde["uses_irrigation"] else "n/a", f"{pm['rmse']:.2f}",
+                     f"{pm['persistence_rmse']:.2f}", f"{pm['skill_vs_persistence']:.2f}"]]))
+    fc = pde["forecast"]
+    S.append(Spacer(1, 4))
+    S.append(table([["Day"] + [d for d in fc["dates"]], ["No rain (%)"] + fc["scenarios"]["No rain"]["mean"],
+                    ["Average rain (%)"] + fc["scenarios"]["Average rain"]["mean"]]))
+    S.append(Paragraph(f"Forecast weather comes only from the uploaded data: temperature {fc['assumptions']['temperature']} C and humidity "
+                       f"{fc['assumptions']['humidity']} % (last 7 days), rain 0 mm or the file's average of {fc['assumptions']['average_rain_mm']} mm/day.", small))
+    us = r.get("usage")
+    S.append(Paragraph("8. Water and electricity", h2))
+    if us:
+        sp = r["system_params"]
+        S.append(table([["Pump ON days", "Water (L)", "Electricity (kWh)", "Pump hours", "Cost"],
+                        [f"{us['pump_on_days']} ({us['pump_on_percent']}%)", f"{us['water_litres']:,}", f"{us['electricity_kwh']:,}", us["pump_hours"],
+                         _f(us["cost"]) if us["cost"] is not None else "-"]]))
+        if us["baseline"]:
+            b = us["baseline"]
+            S.append(Paragraph(f"Compared with running the pump {b['hours_per_day']:g} h every day (your figure): {b['electricity_kwh']:,} kWh and "
+                               f"{b['water_litres']:,} L; saving {b['saved_kwh']:,} kWh ({_f(b['saved_percent'], 1)}%) and {b['saved_litres']:,} L.", body))
+        S.append(Paragraph(f"Entered by the user: area {sp['area_m2']:g} m2, root depth {sp['root_depth_mm']:g} mm, pump {sp['pump_kw']:g} kW, "
+                           f"flow {sp['flow_lph']:g} L/h.", small))
+    else:
+        S.append(Paragraph("Field and pump parameters were not entered, so water and electricity were not calculated.", body))
+    S.append(Paragraph("9. Findings", h2))
     for t in r["recommendations"]:
         S.append(Paragraph("&bull; " + t, body))
 
     if preds:
-        S.append(Paragraph("7. Predictions made with this model", h2))
-        rows = [["Date/time", "Crop", "Temp", "Humidity", "Soil", "Rain", "Prediction", "Confidence %"]]
+        S.append(Paragraph("10. Predictions made with this model", h2))
+        rows = [["Date/time", "Crop", "Temp", "Humidity", "Soil", "Rain", "Prediction", "Pump", "Conf. %", "PDE next %", "Water L", "kWh"]]
         for p in preds[:15]:
             rows.append([p["created_at"], p["crop_type"] or "-", p["temperature"], p["humidity"], p["soil_moisture"], p["rainfall"],
-                         Paragraph(p["prediction"], small), p["confidence"]])
+                         Paragraph(p["prediction"], small), p["pump_status"], p["confidence"], p["pde_next"], _f(p["water_litres"], 0), _f(p["electricity_kwh"])])
         S.append(table(rows))
     doc.build(S)
     return buf.getvalue()
@@ -275,6 +360,76 @@ def build_xlsx(r, preds):
         ch.set_categories(Reference(ws, min_col=1, min_row=2, max_row=n))
         ws.add_chart(ch, f"{chr(70 + len(r['features']))}{2 + j * 16}")
 
+    sv = r["svd"]
+    ws = wb.create_sheet("SVD")
+    header(ws, 1, ["Component", "Singular value", "Explained variance", "Cumulative variance"])
+    for i, (a, b_, c_) in enumerate(zip(sv["singular_values"], sv["explained_variance_ratio"], sv["cumulative_variance"]), 1):
+        ws.append([f"PC{i}", a, b_, c_])
+    n_pc = len(sv["singular_values"]) + 1
+    for col, title, anchor, cls in [(2, "Scree plot", "G2", LineChart), (3, "Explained variance", "G18", BarChart)]:
+        ch = cls(); ch.title = title; ch.height, ch.width = 7, 14
+        ch.add_data(Reference(ws, min_col=col, min_row=1, max_row=n_pc), titles_from_data=True)
+        ch.set_categories(Reference(ws, min_col=1, min_row=2, max_row=n_pc))
+        ws.add_chart(ch, anchor)
+    ws.append([])
+    header(ws, ws.max_row + 1, ["Loadings (V^T)"] + sv["features"])
+    for i, row in enumerate(sv["all_loadings"], 1):
+        ws.append([f"PC{i}"] + row)
+    ws.append([])
+    cmp_ = sv["comparison"]
+    header(ws, ws.max_row + 1, ["SVM", "Accuracy", "Precision", "Recall", "F1", "Training time (s)", "Inputs"])
+    for key, name in (("before", "Before SVD"), ("after", "After SVD")):
+        m_ = cmp_[key]
+        ws.append([name] + [m_["metrics"][k] for k in ("accuracy", "precision", "recall", "f1")] + [m_["train_seconds"], m_["n_inputs"]])
+    ws.append(["Change"] + [cmp_["change"][k] for k in ("accuracy", "precision", "recall", "f1")])
+    widths(ws, [22, 16, 18, 20, 14, 18, 10])
+
+    pde = r["pde"]
+    ws = wb.create_sheet("PDE model")
+    header(ws, 1, ["Parameter / metric", "Value"])
+    for k, v in {**pde["params"], **pde["metrics"]}.items():
+        ws.append([k, v])
+    ws.append([])
+    header(ws, ws.max_row + 1, ["Date", "Observed soil moisture %", "PDE one-day-ahead %"])
+    first = ws.max_row + 1
+    for d, o, m_ in zip(pde["fit"]["dates"], pde["fit"]["observed"], pde["fit"]["pde"]):
+        ws.append([d, o, m_])
+    last = ws.max_row
+    ch = LineChart(); ch.title = "PDE versus observed soil moisture"; ch.height, ch.width = 8, 18
+    ch.add_data(Reference(ws, min_col=2, max_col=3, min_row=first - 1, max_row=last), titles_from_data=True)
+    ch.set_categories(Reference(ws, min_col=1, min_row=first, max_row=last))
+    ws.add_chart(ch, "F2")
+    fc = pde["forecast"]
+    ws2 = wb.create_sheet("PDE forecast")
+    header(ws2, 1, ["Date", "No rain %", "Average rain %"])
+    for i, d in enumerate(fc["dates"]):
+        ws2.append([d, fc["scenarios"]["No rain"]["mean"][i], fc["scenarios"]["Average rain"]["mean"][i]])
+    ch = LineChart(); ch.title = "Soil-moisture forecast"; ch.height, ch.width = 7, 14
+    ch.add_data(Reference(ws2, min_col=2, max_col=3, min_row=1, max_row=len(fc["dates"]) + 1), titles_from_data=True)
+    ch.set_categories(Reference(ws2, min_col=1, min_row=2, max_row=len(fc["dates"]) + 1))
+    ws2.add_chart(ch, "F2")
+    widths(ws2, [14, 14, 16])
+    widths(ws, [30, 26, 22])
+
+    ws = wb.create_sheet("Water and electricity")
+    us = r.get("usage")
+    if us:
+        header(ws, 1, ["Month", "Water (L)", "Electricity (kWh)"] + (["Baseline water (L)", "Baseline electricity (kWh)"] if us["baseline"] else []))
+        for i, lbl in enumerate(us["monthly"]["labels"]):
+            row = [lbl, us["monthly"]["water"][i], us["monthly"]["electricity"][i]]
+            if us["baseline"]:
+                row += [us["baseline"]["monthly_baseline_water"][i], us["baseline"]["monthly_baseline_electricity"][i]]
+            ws.append(row)
+        n = len(us["monthly"]["labels"]) + 1
+        for col, title, anchor in [(2, "Water per month (L)", "H2"), (3, "Electricity per month (kWh)", "H18")]:
+            ch = BarChart(); ch.title = title; ch.height, ch.width = 7, 16
+            ch.add_data(Reference(ws, min_col=col, min_row=1, max_row=n), titles_from_data=True)
+            ch.set_categories(Reference(ws, min_col=1, min_row=2, max_row=n))
+            ws.add_chart(ch, anchor)
+        widths(ws, [12, 14, 20, 20, 26])
+    else:
+        ws["A1"] = "Field and pump parameters were not entered, so water and electricity were not calculated."
+
     ws = wb.create_sheet("SVM results")
     header(ws, 1, ["Metric", "Value"])
     for k, v in mt.items():
@@ -294,11 +449,11 @@ def build_xlsx(r, preds):
     widths(ws, [5, 140])
 
     ws = wb.create_sheet("Predictions")
-    header(ws, 1, ["Date/time", "Crop", "Temperature", "Humidity", "Soil moisture", "Rainfall", "Prediction", "Confidence %"])
+    header(ws, 1, ["Date/time", "Crop", "Temperature", "Humidity", "Soil moisture", "Rainfall", "Prediction", "Pump", "Confidence %", "PDE soil moisture tomorrow %", "Water (L)", "Electricity (kWh)"])
     for p in preds:
         ws.append([p["created_at"], p["crop_type"], p["temperature"], p["humidity"], p["soil_moisture"], p["rainfall"], p["prediction"],
-                   p["confidence"]])
-    widths(ws, [20, 12, 12, 10, 14, 10, 22, 14])
+                   p["pump_status"], p["confidence"], p["pde_next"], p["water_litres"], p["electricity_kwh"]])
+    widths(ws, [20, 12, 12, 10, 14, 10, 22, 8, 12, 26, 12, 16])
 
     out = io.BytesIO()
     wb.save(out)
@@ -330,13 +485,44 @@ def build_csv(r, preds):
         w.writerow([k, v])
     w.writerow(["best C", m["best_params"]["C"]]); w.writerow(["best gamma", m["best_params"]["gamma"]])
     w.writerow(["confusion matrix [[TN, FP], [FN, TP]]", str(m["confusion"])])
+    sv = r["svd"]
+    w.writerow([]); w.writerow(["SVD FEATURE REDUCTION"])
+    w.writerow(["Original features", sv["n_features"], ", ".join(sv["features"])]); w.writerow(["Components kept", sv["n_components"]])
+    w.writerow(["Variance preserved", round(sv["variance_preserved"], 4)])
+    w.writerow(["Component", "Singular value", "Explained variance", "Cumulative"])
+    for i, (a, b_, c_) in enumerate(zip(sv["singular_values"], sv["explained_variance_ratio"], sv["cumulative_variance"]), 1):
+        w.writerow([f"PC{i}", a, b_, c_])
+    w.writerow(["SVM", "Accuracy", "Precision", "Recall", "F1", "Training time (s)", "Inputs"])
+    for key, name in (("before", "Before SVD"), ("after", "After SVD")):
+        m_ = sv["comparison"][key]
+        w.writerow([name] + [m_["metrics"][k] for k in ("accuracy", "precision", "recall", "f1")] + [m_["train_seconds"], m_["n_inputs"]])
+    pde = r["pde"]
+    w.writerow([]); w.writerow(["PDE SOIL-MOISTURE MODEL (fitted to the uploaded data)"])
+    for k, v in {**pde["params"], **pde["metrics"]}.items():
+        w.writerow([k, v])
+    fc = pde["forecast"]
+    w.writerow([]); w.writerow(["PDE FORECAST", "No rain %", "Average rain %"])
+    for i, d in enumerate(fc["dates"]):
+        w.writerow([d, fc["scenarios"]["No rain"]["mean"][i], fc["scenarios"]["Average rain"]["mean"][i]])
+    us = r.get("usage")
+    w.writerow([]); w.writerow(["WATER AND ELECTRICITY"])
+    if us:
+        w.writerow(["Pump ON days", us["pump_on_days"]]); w.writerow(["Water (L)", us["water_litres"]])
+        w.writerow(["Electricity (kWh)", us["electricity_kwh"]]); w.writerow(["Pump hours", us["pump_hours"]])
+        if us["baseline"]:
+            w.writerow(["Baseline electricity (kWh)", us["baseline"]["electricity_kwh"]]); w.writerow(["Saved (kWh)", us["baseline"]["saved_kwh"]])
+        w.writerow(["Month", "Water (L)", "Electricity (kWh)"])
+        for i, lbl in enumerate(us["monthly"]["labels"]):
+            w.writerow([lbl, us["monthly"]["water"][i], us["monthly"]["electricity"][i]])
+    else:
+        w.writerow(["Field and pump parameters were not entered, so water and electricity were not calculated."])
     w.writerow([]); w.writerow(["FINDINGS"])
     for t in r["recommendations"]:
         w.writerow([t])
     if preds:
         w.writerow([]); w.writerow(["PREDICTIONS MADE WITH THIS MODEL"])
-        w.writerow(["Date/time", "Crop", "Temperature", "Humidity", "Soil moisture", "Rainfall", "Prediction", "Confidence %"])
+        w.writerow(["Date/time", "Crop", "Temperature", "Humidity", "Soil moisture", "Rainfall", "Prediction", "Pump", "Confidence %", "PDE soil moisture tomorrow %", "Water (L)", "Electricity (kWh)"])
         for p in preds:
             w.writerow([p["created_at"], p["crop_type"], p["temperature"], p["humidity"], p["soil_moisture"], p["rainfall"], p["prediction"],
-                        p["confidence"]])
+                        p["pump_status"], p["confidence"], p["pde_next"], p["water_litres"], p["electricity_kwh"]])
     return out.getvalue()

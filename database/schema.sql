@@ -13,7 +13,8 @@ CREATE TABLE IF NOT EXISTS datasets (
     error       TEXT,
     mapping     TEXT,                             -- JSON: which column is date, temperature, humidity, ...
     results     TEXT,                             -- JSON: cleaning log, statistics, chart data, SVM metrics
-    model_file  TEXT                              -- SVM trained on this upload (user_models/)
+    model_file  TEXT,                             -- SVM trained on this upload (user_models/)
+    system_params TEXT                            -- JSON: field area, root depth, pump power / flow entered by the user
 );
 
 -- Manual predictions made with the SVM of one uploaded dataset
@@ -28,6 +29,10 @@ CREATE TABLE IF NOT EXISTS predictions (
     crop_type           TEXT,
     prediction          TEXT    NOT NULL,         -- 'Irrigation Required' / 'No Irrigation Needed'
     irrigation_required INTEGER NOT NULL,         -- 1 / 0
-    confidence          REAL    NOT NULL          -- percent
+    pump_status         TEXT    NOT NULL,         -- 'ON' / 'OFF'
+    confidence          REAL    NOT NULL,         -- percent
+    pde_next            REAL,                     -- PDE soil moisture estimate for tomorrow (%)
+    water_litres        REAL,                     -- only when the user entered field and pump parameters
+    electricity_kwh     REAL
 );
 CREATE INDEX IF NOT EXISTS idx_pred_dataset ON predictions(dataset_id);

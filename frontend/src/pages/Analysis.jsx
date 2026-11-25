@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
-  AlertTriangle, BrainCircuit, Lightbulb, Rows3, Columns3, SearchX, Copy, HardDrive, ShieldCheck, Sigma, Sparkles, Zap,
+  AlertTriangle, BrainCircuit, Droplets, Lightbulb, Rows3, Columns3, SearchX, Copy, HardDrive, ShieldCheck, Sigma, Sparkles, Zap,
 } from "lucide-react";
 import { api } from "../api";
 import Loader from "../components/Loader";
@@ -11,13 +11,17 @@ import CleaningSteps from "../components/CleaningSteps";
 import Heatmap from "../components/Heatmap";
 import BoxPlots from "../components/BoxPlots";
 import ReportButtons from "../components/ReportButtons";
+import PdePanel from "../components/PdePanel";
+import SvdPanel from "../components/SvdPanel";
+import UsagePanel from "../components/UsagePanel";
+import HistoryPanel from "../components/HistoryPanel";
 import {
   BarGraph, CombinedChart, ConfusionMatrix, HistogramChart, PieGraph, RocChart, ScatterPlot, TrendChart, COLORS,
 } from "../components/DatasetCharts";
 import { useToast } from "../context/ToastContext";
 import { fmt, setActiveDataset } from "../utils/active";
 
-const TABS = [["overview", "Overview"], ["cleaning", "Data cleaning"], ["stats", "Statistics"], ["graphs", "Graphs"], ["model", "AI model"], ["advice", "Findings"]];
+const TABS = [["overview", "Overview"], ["cleaning", "Data cleaning"], ["stats", "Statistics"], ["graphs", "Graphs"], ["svd", "SVD Feature Reduction"], ["pde", "PDE soil moisture"], ["model", "SVM model"], ["usage", "Water & electricity"], ["history", "Prediction history"], ["advice", "Findings"]];
 const TREND_ORDER = ["soil_moisture", "rainfall", "temperature", "humidity"];
 const TREND_TITLE = { soil_moisture: "Soil Moisture History", rainfall: "Rainfall History", temperature: "Temperature History", humidity: "Humidity History" };
 
@@ -115,7 +119,7 @@ export default function Analysis() {
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <Kpi i={5} icon={BrainCircuit} label="SVM accuracy" value={`${(m.accuracy * 100).toFixed(1)}%`} sub={`on ${r.model.test_rows.toLocaleString()} unseen rows`} />
                 <Kpi i={6} icon={Zap} label="F1 score" value={`${(m.f1 * 100).toFixed(1)}%`} sub={`precision ${(m.precision * 100).toFixed(0)}% · recall ${(m.recall * 100).toFixed(0)}%`} tone="amber" />
-                <Kpi i={7} icon={Sparkles} label="Usable rows" value={fmt(r.cleaning.rows_after)} sub={`of ${fmt(info.rows)} uploaded`} tone="sky" />
+                <Kpi i={7} icon={Droplets} label="PDE moisture error" value={`${r.pde.metrics.rmse.toFixed(2)} %`} sub={`vs ${r.pde.metrics.persistence_rmse.toFixed(2)} % simple guess`} tone="sky" />
                 <Kpi i={8} icon={ShieldCheck} label="Outliers found" value={fmt(Object.values(r.cleaning.outliers).reduce((a, o) => a + o.count, 0))} sub="kept unchanged" tone="violet" />
               </div>
               <div className="glass p-5">
@@ -215,6 +219,12 @@ export default function Analysis() {
             </div>
           )}
 
+          {/* =========================================== PDE */}
+          {tab === "svd" && <SvdPanel r={r} />}
+          {tab === "pde" && <PdePanel r={r} />}
+          {tab === "usage" && <UsagePanel datasetId={ds.id} />}
+          {tab === "history" && <HistoryPanel datasetId={ds.id} />}
+
           {/* =========================================== AI MODEL */}
           {tab === "model" && (
             <div className="space-y-6">
@@ -235,7 +245,7 @@ export default function Analysis() {
                   <li>• Algorithm: Support Vector Machine, <b>RBF kernel</b></li>
                   <li>• Best settings: C = <b>{r.model.best_params.C}</b>, gamma = <b>{String(r.model.best_params.gamma)}</b> (grid search, 3-fold CV, F1)</li>
                   <li>• Train / test split: <b>{r.model.train_rows.toLocaleString()}</b> / <b>{r.model.test_rows.toLocaleString()}</b> rows (80 / 20, stratified)</li>
-                  <li>• Features: <b>{r.model.features.join(", ")}</b></li>
+                  <li>• Features: <b>{r.model.features.join(", ")}</b> (pde_next = the PDE's estimate of tomorrow's moisture)</li>
                   <li>• Scaling: standardisation (fitted on training rows only)</li>
                   <li>• Cross-validated F1: <b>{(r.model.cv_f1 * 100).toFixed(1)}%</b></li>
                 </ul>

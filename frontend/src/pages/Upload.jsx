@@ -166,7 +166,7 @@ export default function Upload() {
           <div className="mt-6 grid gap-4 text-sm text-slate-600 sm:grid-cols-3 dark:text-slate-300">
             {[["Required columns", "Date, Temperature, Humidity, Soil Moisture and Rainfall. Names like Temp, RH, Rain or Soil Moist are recognised automatically."],
               ["Validated first", "The file type, empty or corrupted files, missing columns, duplicate rows and missing values are checked before anything is analysed."],
-              ["Optional columns", "A crop column and an irrigation-needed (Yes/No) column are used when present. Without the label, one is derived from your own soil-moisture values and marked as derived."]].map(([t, d]) => (
+              ["Optional columns", "Any other numeric sensor columns are picked up for the SVD feature reduction. A crop column and an irrigation-needed (Yes/No) column are used when present. Without the label, one is derived from your own soil-moisture values and marked as derived."]].map(([t, d]) => (
               <div key={t} className="glass p-4"><p className="font-bold text-leaf-700 dark:text-leaf-300">{t}</p><p className="mt-1">{d}</p></div>
             ))}
           </div>

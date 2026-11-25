@@ -20,6 +20,7 @@ import config
 import database
 import dataset_service
 import reports
+import water_energy
 
 app = Flask(__name__, static_folder=config.STATIC_DIR, static_url_path="/static",
             template_folder=config.TEMPLATE_DIR)
@@ -40,6 +41,7 @@ def load_dataset(ds_id):
     if row:
         row["mapping"] = json.loads(row["mapping"]) if row["mapping"] else None
         row["results"] = json.loads(row["results"]) if row["results"] else None
+        row["system_params"] = json.loads(row["system_params"]) if row.get("system_params") else None
     return row
 
 
@@ -194,7 +196,8 @@ def model_info(ds_id):
         return err(NO_DATA_MESSAGE, 404)
     r = ds["results"]
     return jsonify(dataset={"id": ds["id"], "name": ds["name"]}, crops=r["crops"], features=r["features"],
-                   observed=r["ranges"], metrics=r["model"]["metrics"], labels=r["labels"], units=r["units"])
+                   observed=r["ranges"], metrics=r["model"]["metrics"], labels=r["labels"], units=r["units"],
+                   system_params=ds["system_params"], extras=r.get("extras", {}))
 
 
 @app.post("/api/datasets/<int:ds_id>/predict")
@@ -216,22 +219,73 @@ def predict(ds_id):
     crop = data.get("crop_type")
     if r["crops"] and crop not in r["crops"]:
         return err("Please choose one of the crops that appear in your dataset.")
+    extras = {}
+    given = data.get("extras") or {}
+    for key, info in r.get("extras", {}).items():              # other numeric sensors found in the dataset (optional in the form)
+        if given.get(key) in (None, ""):
+            continue
+        try:
+            extras[key] = float(given[key])
+        except (TypeError, ValueError):
+            return err(f"{info['label']} must be a number.")
     res = dataset_service.predict_with_model(os.path.join(config.USER_MODEL_DIR, ds["model_file"]),
                                              values["temperature"], values["humidity"], values["soil_moisture"],
-                                             values["rainfall"], crop)
+                                             values["rainfall"], crop, extras)
+    need = None                                                  # water / electricity only with the user's own pump data
+    if ds["system_params"]:
+        need = water_energy.requirement(res["deficit_pct"], ds["system_params"])
+        res.update({k: round(v, 2) for k, v in need.items()})
     pid = database.execute(
-        """INSERT INTO predictions (dataset_id, temperature, humidity, soil_moisture, rainfall, crop_type,
-                                    prediction, irrigation_required, confidence) VALUES (?,?,?,?,?,?,?,?,?)""",
+        """INSERT INTO predictions (dataset_id, temperature, humidity, soil_moisture, rainfall, crop_type, prediction,
+                                    irrigation_required, pump_status, confidence, pde_next, water_litres, electricity_kwh)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (ds_id, values["temperature"], values["humidity"], values["soil_moisture"], values["rainfall"],
-         crop or "", res["prediction"], int(res["irrigation_required"]), res["confidence"]))
+         crop or "", res["prediction"], int(res["irrigation_required"]), res["pump_status"], res["confidence"],
+         res["pde_next_moisture"], need["water_litres"] if need else None, need["electricity_kwh"] if need else None))
     row = database.query("SELECT created_at FROM predictions WHERE id = ?", (pid,), one=True)
-    return jsonify(id=pid, created_at=row["created_at"], inputs=values, crop_type=crop, model_name=ds["name"], **res), 201
+    return jsonify(id=pid, created_at=row["created_at"], inputs=values, crop_type=crop, model_name=ds["name"],
+                   has_system_params=bool(ds["system_params"]), **res), 201
 
 
 @app.get("/api/datasets/<int:ds_id>/predictions")
 def list_predictions(ds_id):
     rows = database.query("SELECT * FROM predictions WHERE dataset_id = ? ORDER BY id DESC LIMIT 200", (ds_id,))
     return jsonify(predictions=rows)
+
+
+# ------------------------------------------------------------------ SVD feature reduction
+@app.get("/api/datasets/<int:ds_id>/svd")
+def get_svd(ds_id):
+    """The SVD analysis of the uploaded dataset: singular values, explained variance, loadings and the SVM comparison."""
+    ds = get_done_dataset(ds_id)
+    if not ds:
+        return err(NO_DATA_MESSAGE, 404)
+    return jsonify(dataset={"id": ds["id"], "name": ds["name"]}, svd=ds["results"]["svd"])
+
+
+# ------------------------------------------------------------------ pump / field parameters, water and electricity
+@app.post("/api/datasets/<int:ds_id>/system")
+def save_system(ds_id):
+    """The user's own field and pump data (needed for litres and kWh; a weather dataset cannot contain them)."""
+    ds = get_done_dataset(ds_id)
+    if not ds:
+        return err(NO_DATA_MESSAGE, 404)
+    try:
+        params = water_energy.parse(request.get_json(silent=True) or {})
+    except ValueError as exc:
+        return err(str(exc))
+    database.execute("UPDATE datasets SET system_params=? WHERE id=?", (json.dumps(params), ds_id))
+    return jsonify(params=params, usage=water_energy.usage(ds["results"]["daily_plan"], params))
+
+
+@app.get("/api/datasets/<int:ds_id>/usage")
+def get_usage(ds_id):
+    ds = get_done_dataset(ds_id)
+    if not ds:
+        return err(NO_DATA_MESSAGE, 404)
+    params = ds["system_params"]
+    return jsonify(params=params, usage=water_energy.usage(ds["results"]["daily_plan"], params) if params else None,
+                   levels=ds["results"]["levels"], fields={**water_energy.REQUIRED, **water_energy.OPTIONAL})
 
 
 # ------------------------------------------------------------------ reports
@@ -252,7 +306,10 @@ def dataset_report(ds_id, fmt):
     preds = database.query("SELECT * FROM predictions WHERE dataset_id = ? ORDER BY id DESC LIMIT 200", (ds_id,))
     mime, ext, build = REPORTS[fmt]
     stem = os.path.splitext(ds["name"])[0].replace(" ", "_")[:40]
-    return Response(build(ds["results"], preds), mimetype=mime,
+    res = dict(ds["results"])
+    res["usage"] = water_energy.usage(res["daily_plan"], ds["system_params"]) if ds["system_params"] else None
+    res["system_params"] = ds["system_params"]
+    return Response(build(res, preds), mimetype=mime,
                     headers={"Content-Disposition": f"attachment; filename=irrigation_report_{stem}.{ext}"})
 
 

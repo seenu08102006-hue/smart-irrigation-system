@@ -41,12 +41,15 @@ def init_db():
     conn = get_db()
     try:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(predictions)").fetchall()]
-        if cols and "user_id" in cols:                      # old demo-era table: its rows were not from uploaded data
+        if cols and ("user_id" in cols or "pump_status" not in cols):   # older layout: recreate (rows were only test predictions)
             conn.execute("DROP TABLE predictions")
         conn.execute("DROP TABLE IF EXISTS users")
         conn.execute("DROP TABLE IF EXISTS contact_messages")
         with open(config.SCHEMA_PATH, encoding="utf-8") as f:
             conn.executescript(f.read())
+        dcols = [r[1] for r in conn.execute("PRAGMA table_info(datasets)").fetchall()]
+        if "system_params" not in dcols:
+            conn.execute("ALTER TABLE datasets ADD COLUMN system_params TEXT")
         conn.commit()
     finally:
         conn.close()

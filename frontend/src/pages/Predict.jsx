@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
-import { BrainCircuit, CheckCircle2, CloudRain, CloudUpload, Database, Droplet, Gauge, Thermometer, Waves, Wheat, XCircle } from "lucide-react";
+import { BatteryCharging, BrainCircuit, CheckCircle2, CloudRain, CloudUpload, Database, Droplet, Droplets, Gauge, Power, Thermometer, Waves, Wheat, XCircle } from "lucide-react";
 import { api } from "../api";
 import Loader from "../components/Loader";
 import { useToast } from "../context/ToastContext";
@@ -52,8 +52,9 @@ export default function Predict() {
     api.model(active).then((m) => {
       setMeta(m);
       // start every field at the middle of the range seen in YOUR data (no made-up defaults)
-      const f = { crop_type: m.crops[0] || "" };
+      const f = { crop_type: m.crops[0] || "", extras: {} };
       m.features.forEach((k) => { f[k] = ((m.observed[k][0] + m.observed[k][1]) / 2).toFixed(1); });
+      Object.entries(m.extras || {}).forEach(([k, e]) => { f.extras[k] = String(+e.median.toFixed(2)); });     // typical value of YOUR data
       setForm(f);
     }).catch((e) => toast.error(e.message));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -64,7 +65,7 @@ export default function Predict() {
 
   const submit = async (e) => {
     e.preventDefault();
-    const body = { crop_type: form.crop_type };
+    const body = { crop_type: form.crop_type, extras: form.extras || {} };
     for (const f of FIELDS) {
       if (form[f.key] === "" || Number.isNaN(Number(form[f.key]))) return toast.error(`${f.label} must be a number.`);
       body[f.key] = Number(form[f.key]);
@@ -112,6 +113,13 @@ export default function Predict() {
                   <p className="mt-1 text-xs text-slate-500">Seen in your data: {fmt(meta.observed[key][0], 1)} to {fmt(meta.observed[key][1], 1)} {unit}</p>
                 </div>
               ))}
+              {Object.entries(meta.extras || {}).map(([k, e]) => (
+                <div key={k}>
+                  <label className="label" htmlFor={k}>{e.label} <span className="text-xs font-normal text-slate-400">(other sensor)</span></label>
+                  <input id={k} type="number" step="any" className="input" value={form.extras?.[k] ?? ""} onChange={(ev) => setForm({ ...form, extras: { ...form.extras, [k]: ev.target.value } })} />
+                  <p className="mt-1 text-xs text-slate-500">Typical value in your data: {fmt(e.median, 2)} (range {fmt(e.min, 1)} to {fmt(e.max, 1)})</p>
+                </div>
+              ))}
               {meta.crops.length > 0 && (
                 <div>
                   <label className="label flex items-center gap-2" htmlFor="crop"><span className="flex h-7 w-7 items-center justify-center rounded-lg bg-leaf-100 text-leaf-600 dark:bg-leaf-900/40"><Wheat className="h-4 w-4" /></span>Crop type</label>
@@ -128,11 +136,16 @@ export default function Predict() {
         {result && (
           <motion.section initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }} className="mt-8">
             <h2 className="mb-3 text-xl font-bold">Prediction Result</h2>
-            <div className="grid gap-4 sm:grid-cols-3">
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               <div className={`glass p-5 ${yes ? "!border-red-400" : "!border-leaf-500"}`}>
                 <span className={`mb-3 flex h-11 w-11 items-center justify-center rounded-xl text-white shadow ${yes ? "bg-red-500" : "bg-leaf-500"}`}>{yes ? <XCircle className="h-5 w-5" /> : <CheckCircle2 className="h-5 w-5" />}</span>
                 <p className="text-sm text-slate-500">Irrigation Required</p>
                 <p className="text-2xl font-extrabold">{yes ? "Yes" : "No"}</p>
+              </div>
+              <div className="glass p-5">
+                <span className={`mb-3 flex h-11 w-11 items-center justify-center rounded-xl text-white shadow ${yes ? "bg-red-500" : "bg-slate-500"}`}><Power className="h-5 w-5" /></span>
+                <p className="text-sm text-slate-500">Pump Status</p>
+                <p className="text-2xl font-extrabold">{result.pump_status}</p>
               </div>
               <div className="glass p-5">
                 <span className="mb-3 flex h-11 w-11 items-center justify-center rounded-xl bg-sky-500 text-white shadow"><Gauge className="h-5 w-5" /></span>
@@ -140,10 +153,32 @@ export default function Predict() {
                 <p className="text-2xl font-extrabold">{result.confidence}%</p>
               </div>
               <div className="glass p-5">
-                <span className="mb-3 flex h-11 w-11 items-center justify-center rounded-xl bg-amber-500 text-white shadow"><BrainCircuit className="h-5 w-5" /></span>
-                <p className="text-sm text-slate-500">Probability irrigation is needed</p>
-                <p className="text-2xl font-extrabold">{result.probability_yes}%</p>
+                <span className="mb-3 flex h-11 w-11 items-center justify-center rounded-xl bg-amber-500 text-white shadow"><Waves className="h-5 w-5" /></span>
+                <p className="text-sm text-slate-500">PDE: soil moisture tomorrow</p>
+                <p className="text-2xl font-extrabold">{result.pde_next_moisture}%</p>
               </div>
+              {result.has_system_params ? (
+                <>
+                  <div className="glass p-5">
+                    <span className="mb-3 flex h-11 w-11 items-center justify-center rounded-xl bg-sky-500 text-white shadow"><Droplets className="h-5 w-5" /></span>
+                    <p className="text-sm text-slate-500">Water Requirement</p>
+                    <p className="text-2xl font-extrabold">{fmt(result.water_litres)} L</p>
+                    <p className="text-xs text-slate-500">{fmt(result.water_mm, 1)} mm over your field</p>
+                  </div>
+                  <div className="glass p-5">
+                    <span className="mb-3 flex h-11 w-11 items-center justify-center rounded-xl bg-leaf-500 text-white shadow"><BatteryCharging className="h-5 w-5" /></span>
+                    <p className="text-sm text-slate-500">Estimated Electricity</p>
+                    <p className="text-2xl font-extrabold">{fmt(result.electricity_kwh, 2)} kWh</p>
+                    <p className="text-xs text-slate-500">{fmt(result.pump_hours, 2)} h of pumping</p>
+                  </div>
+                </>
+              ) : (
+                <div className="glass p-5 sm:col-span-2">
+                  <p className="font-bold">Water and electricity</p>
+                  <p className="mt-1 text-sm text-slate-500">Enter your field area, root depth and pump power / flow to see litres and kWh. They are not assumed.</p>
+                  <Link to={`/analysis/${active}?tab=usage`} className="btn-outline mt-3 !py-2 text-sm">Enter field and pump data</Link>
+                </div>
+              )}
             </div>
             <p className="mt-3 text-xs text-slate-500">Model: SVM trained on {result.model_name}. {meta?.metrics && `Its test accuracy was ${(meta.metrics.accuracy * 100).toFixed(1)}%.`}</p>
           </motion.section>
